@@ -1,19 +1,25 @@
 """
-Email Enrichment Tool
-=====================
-Reads a CSV of companies and their websites, then scrapes each site
-for a contact email address using two sequential passes:
+Email & Phone Enrichment Tool
+=============================
+Reads any CSV that contains a website/URL column and scrapes each site
+for contact email addresses AND phone numbers using two sequential passes:
 
   Pass 1 — Fast HTTP GET  (homepage + configured contact paths, no browser)
   Pass 2 — Playwright     (headless Chromium fallback for JS-rendered sites)
 
 Results are written to an Excel workbook (+ CSV backup) with a Run Stats sheet.
 Progress is checkpointed so any interrupted run can be resumed.
+Auto-saves every N sites AND every 60 seconds in a background thread.
+
+Column detection is fully automatic — no need to rename CSV headers.
+Input file detection is automatic — no need to rename your file.
 
 Usage:
-  python enricher.py
-  python enricher.py --input companies.csv --config config.yaml
-  python enricher.py --fresh          # clear checkpoint and restart
+  python enricher.py                          # auto-detects CSV in current dir
+  python enricher.py --input my_leads.csv
+  python enricher.py --input leads.csv --config my_config.yaml
+  python enricher.py --fresh                  # clear checkpoint and restart
+  python enricher.py --output results.xlsx
 
 Runtime controls (while running):
   P  — pause / resume
@@ -24,7 +30,7 @@ Runtime controls (while running):
   Mac/Linux: type the letter then press Enter
 
 Requirements:
-  pip install requests playwright pyyaml openpyxl
+  pip install requests playwright pyyaml openpyxl tqdm
   python -m playwright install chromium
 """
 
@@ -52,27 +58,53 @@ import yaml
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# Optional tqdm — falls back gracefully if not installed
+try:
+    from tqdm import tqdm as _TqdmClass
+    TQDM_AVAILABLE = True
+except ImportError:
+    TQDM_AVAILABLE = False
+
+    class _TqdmClass:           # type: ignore[no-redef]
+        """Minimal no-op shim used when tqdm is not installed."""
+        def __init__(self, *a, **kw) -> None:
+            self.total = kw.get("total", 0)
+            self.n = 0
+        def update(self, n: int = 1) -> None:   self.n += n
+        def set_postfix(self, **kw) -> None:    pass
+        def write(self, s: str) -> None:        print(s, flush=True)
+        def close(self) -> None:                pass
+        def __enter__(self):                    return self
+        def __exit__(self, *a) -> None:         pass
+
 
 # ================================================================
 # CONFIG LOADER
 # ================================================================
 
 DEFAULT_CONFIG: dict = {
-    "input_file":            "companies.csv",
+    # ── Input / Output ───────────────────────────────────────────
+    # Leave blank to auto-detect a CSV in the current directory.
+    "input_file":            "",
     "output_file":           "",
     "checkpoint_file":       "enrich_checkpoint.json",
     "command_file":          "command.txt",
+    "output_format":         "xlsx",   # "xlsx" or "csv"
+
+    # ── Timing & Performance ─────────────────────────────────────
     "http_timeout":          [4, 6],
     "playwright_timeout":    8000,
     "browser_restart_every": 150,
     "stop_at":               "23:00",
-    "contact_paths": [
-        "/contact", "/contact-us", "/about", "/about-us",
-    ],
+    "autosave_interval":     60,       # background save every N seconds
+
+    # ── Rate Limiting ────────────────────────────────────────────
     "rate_limit": {
         "min_seconds": 0.1,
         "max_seconds": 0.5,
     },
+
+    # ── User-Agent Rotation ──────────────────────────────────────
     "user_agents": [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -83,14 +115,25 @@ DEFAULT_CONFIG: dict = {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.0; rv:109.0) Gecko/20100101 Firefox/120.0",
     ],
-    "output_format": "xlsx",
+
+    # ── Scraping Behaviour ───────────────────────────────────────
+    "contact_paths": [
+        "/contact", "/contact-us", "/about", "/about-us",
+    ],
     "locale": "en-US",
+
+    # ── Column Names ─────────────────────────────────────────────
+    # Leave blank ("") for auto-detection from your CSV headers.
+    # These are the OUTPUT column names written to the results file.
     "columns": {
-        "company_name": "Company Name",
-        "website":      "Website",
+        "company_name": "",       # auto-detect
+        "website":      "",       # auto-detect
         "email":        "Email",
-        "category":     "Category",
+        "phone":        "Phone",
+        "category":     "",       # auto-detect (optional)
     },
+
+    # ── Email Filtering ──────────────────────────────────────────
     "skip_email_keywords": [
         "noreply", "no-reply", "donotreply", "privacy", "dataprotection",
         "data-protection", "gdpr", "unsubscribe", "postmaster", "webmaster",
@@ -106,12 +149,14 @@ DEFAULT_CONFIG: dict = {
         "sentry.io", "wixpress.com", "example.com", "schema.org", "w3.org",
         "googleapis.com", "cloudflare.com", "jquery.com",
     ],
+
+    # ── Cookie Banner Dismissal ──────────────────────────────────
     "cookie_selectors": [
-        'button:has-text("Accept all")',   'button:has-text("Accept All")',
+        'button:has-text("Accept all")',    'button:has-text("Accept All")',
         'button:has-text("Accept cookies")', 'button:has-text("Accept")',
-        'button:has-text("I Accept")',     'button:has-text("Allow all")',
-        'button:has-text("OK")',           'button:has-text("Got it")',
-        '[id*="accept"]',                  '[aria-label*="Accept"]',
+        'button:has-text("I Accept")',      'button:has-text("Allow all")',
+        'button:has-text("OK")',            'button:has-text("Got it")',
+        '[id*="accept"]',                   '[aria-label*="Accept"]',
     ],
 }
 
@@ -120,8 +165,8 @@ def load_config(config_path: Optional[str] = None) -> dict:
     """
     Load configuration from a YAML file, merged on top of defaults.
 
-    Nested dicts (e.g. rate_limit, columns) are shallow-merged so that
-    partial overrides in the YAML file don't wipe unmentioned sub-keys.
+    Nested dicts (e.g. rate_limit, columns) are shallow-merged so partial
+    YAML overrides don't wipe unmentioned sub-keys.
     """
     cfg = {k: (v.copy() if isinstance(v, dict) else v) for k, v in DEFAULT_CONFIG.items()}
     if config_path and os.path.exists(config_path):
@@ -140,6 +185,7 @@ def load_config(config_path: Optional[str] = None) -> dict:
 # ================================================================
 
 _start_time: float = time.time()
+_active_bar: Optional[object] = None   # set to a tqdm instance during passes
 
 
 def elapsed() -> str:
@@ -149,9 +195,63 @@ def elapsed() -> str:
 
 
 def log(msg: str, kind: str = "info") -> None:
-    """Print a timestamped, icon-prefixed status line to stdout."""
+    """Print a timestamped, icon-prefixed status line.
+    Routes through tqdm.write() when a progress bar is active to avoid glitches."""
     icons = {"good": "✅", "warn": "⚠ ", "error": "❌", "info": "  ", "dim": "  "}
-    print(f"{elapsed():>9} {icons.get(kind, '  ')} {msg}", flush=True)
+    text = f"{elapsed():>9} {icons.get(kind, '  ')} {msg}"
+    if _active_bar is not None:
+        _active_bar.write(text)   # type: ignore[attr-defined]
+    else:
+        print(text, flush=True)
+
+
+# ================================================================
+# AUTO-SAVER  (background thread)
+# ================================================================
+
+class AutoSaver:
+    """
+    Background daemon thread that persists results every `interval` seconds.
+    This ensures data is never lost even between the regular per-site saves.
+
+    Usage:
+        saver = AutoSaver(found, out_file, cfg, stats, interval=60)
+        # … run the pass …
+        saver.stop()
+    """
+
+    def __init__(
+        self,
+        found:    dict,
+        out_file: str,
+        cfg:      dict,
+        stats:    dict,
+        interval: int = 60,
+    ) -> None:
+        self._found    = found
+        self._out_file = out_file
+        self._cfg      = cfg
+        self._stats    = stats
+        self._interval = max(1, interval)
+        self._stopped  = False
+        t = threading.Thread(target=self._run, daemon=True)
+        t.start()
+
+    def _run(self) -> None:
+        ticks = 0
+        while not self._stopped:
+            time.sleep(1)
+            ticks += 1
+            if ticks >= self._interval and not self._stopped:
+                ticks = 0
+                try:
+                    save_output(self._found, self._out_file, self._cfg, self._stats)
+                except Exception:
+                    pass  # never crash the background thread
+
+    def stop(self) -> None:
+        """Signal the thread to stop (it is a daemon so it won't block exit)."""
+        self._stopped = True
 
 
 # ================================================================
@@ -159,7 +259,7 @@ def log(msg: str, kind: str = "info") -> None:
 # ================================================================
 
 class State:
-    """Shared mutable run state — accessed from both the main thread and ControlListener."""
+    """Shared mutable run state — accessed from both main thread and ControlListener."""
     paused: bool = False
     stop:   bool = False
 
@@ -260,8 +360,6 @@ def _beep(kind: str = "error") -> None:
 def check_cmd_file(state: State, cmd_file: str, checkpoint_file: str) -> None:
     """
     Read a single command from the command file and clear it.
-    Allows external scripts or schedulers to control the enricher.
-
     Valid file contents: pause | resume | stop | fresh
     """
     if not os.path.exists(cmd_file):
@@ -357,8 +455,7 @@ def check_disk(min_mb: int = 500) -> bool:
 def extract_emails_raw(html: str) -> List[str]:
     """
     Extract plaintext email addresses from HTML using a permissive regex.
-    Filters out asset-path false positives (image filenames, etc.) and
-    addresses longer than 80 characters.
+    Filters out asset-path false positives and addresses longer than 80 chars.
     """
     raw = re.findall(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", html)
     result = []
@@ -377,9 +474,7 @@ def extract_emails_raw(html: str) -> List[str]:
 def decode_cloudflare_email(encoded: str) -> str:
     """
     Decode a Cloudflare email-protection hex string.
-
-    Cloudflare XORs each byte of the email address against the first byte
-    (the key), then hex-encodes the result. This reverses that transformation.
+    Cloudflare XORs each byte against the first byte (the key), then hex-encodes.
     """
     try:
         enc = bytes.fromhex(encoded)
@@ -406,6 +501,47 @@ def extract_emails_full(html: str) -> List[str]:
     return list(set(emails))
 
 
+def extract_phones(html: str) -> List[str]:
+    """
+    Extract phone numbers from HTML.
+
+    Strategy (priority order):
+      1. tel: href attributes — highest confidence, very low false-positive rate.
+      2. Regex pattern matching — broader sweep filtered by digit count (7–15).
+
+    Returns a deduplicated list of raw phone strings, most reliable first.
+    """
+    seen_digits: Set[str] = set()
+    phones: List[str] = []
+
+    def _add(raw: str) -> None:
+        raw = raw.strip()
+        digits = re.sub(r"\D", "", raw)
+        if 7 <= len(digits) <= 15 and digits not in seen_digits:
+            seen_digits.add(digits)
+            phones.append(raw)
+
+    # 1. tel: href links — best source
+    for m in re.finditer(r'href=["\']tel:([^"\']{4,25})["\']', html, re.I):
+        _add(m.group(1).replace("%20", " ").replace("+", "+"))
+
+    # 2. Regex fallback when no tel: links are present
+    if not phones:
+        patterns = [
+            # International: +44 20 7123 4567, +1-800-555-5555
+            r"\+\d{1,3}[\s\-\.]?\(?\d{1,4}\)?[\s\-\.]?\d{3,4}[\s\-\.]?\d{3,4}",
+            # Bracketed area code: (020) 7123 4567
+            r"\(\d{2,5}\)[\s\-\.]?\d{3,4}[\s\-\.]?\d{3,4}",
+            # Plain runs with separators: 020 7123 4567, 555-555-5555
+            r"\b\d{3,5}[\s\-\.]\d{3,4}[\s\-\.]\d{3,4}\b",
+        ]
+        for pat in patterns:
+            for m in re.finditer(pat, html):
+                _add(m.group(0))
+
+    return phones
+
+
 def score_email(email: str, cfg: dict) -> int:
     """
     Score an email address by contact quality. Lower = better.
@@ -416,9 +552,6 @@ def score_email(email: str, cfg: dict) -> int:
       2    High-priority generic  (info@, hello@, contact@)
       3    Other generic  (support@, accounts@, sales@)
     999    Junk / skip-list  — filtered out entirely
-
-    All keyword lists are read from cfg so they can be tuned without
-    touching the code.
     """
     if not email or "@" not in email:
         return 999
@@ -454,28 +587,69 @@ def get_output_path(cfg: dict) -> str:
     if cfg.get("output_file"):
         return cfg["output_file"]
     ext = "xlsx" if cfg.get("output_format", "xlsx") == "xlsx" else "csv"
-    return f"found_emails_{date.today().strftime('%Y%m%d')}.{ext}"
+    return f"found_contacts_{date.today().strftime('%Y%m%d')}.{ext}"
+
+
+def _detect_column(headers: List[str], *keywords: str) -> Optional[str]:
+    """Return the first header containing any keyword (case-insensitive). None if not found."""
+    for h in headers:
+        h_lower = h.lower()
+        if any(kw in h_lower for kw in keywords):
+            return h
+    return None
+
+
+def find_input_file() -> Optional[str]:
+    """
+    Auto-detect the input CSV file from the current working directory.
+
+    - Exactly one CSV → use it automatically.
+    - Multiple CSVs   → prompt the user to choose.
+    - None found      → return None (caller will error out with guidance).
+    """
+    csv_files = sorted(Path(".").glob("*.csv"))
+
+    if not csv_files:
+        return None
+
+    if len(csv_files) == 1:
+        return str(csv_files[0])
+
+    # Multiple files — ask the user
+    print("\nMultiple CSV files found in this directory. Please choose one:")
+    for i, f in enumerate(csv_files, 1):
+        print(f"  {i}. {f.name}")
+    print()
+    while True:
+        try:
+            raw = input("Enter number (or full path to another file): ").strip()
+            if raw.isdigit():
+                idx = int(raw) - 1
+                if 0 <= idx < len(csv_files):
+                    return str(csv_files[idx])
+            elif os.path.exists(raw):
+                return raw
+            print("  Invalid choice — try again.")
+        except (EOFError, KeyboardInterrupt):
+            return None
 
 
 def load_input(cfg: dict) -> List[dict]:
     """
-    Load and validate the input CSV file.
+    Load and validate the input CSV with fully automatic column detection.
 
-    Column names are read from cfg['columns'] so the tool works with
-    any CSV regardless of header naming conventions.
+    Detection order for each column type:
+      Website (REQUIRED):   website · url · domain · site · web · link · homepage
+      Company name (opt):   company · name · organisation · organization · business
+                            firm · client · account · brand · title
+                            → falls back to the first column if nothing matches
+      Category (opt):       category · type · sector · industry · segment · group · vertical
+      Pre-existing phone:   phone · tel · mobile · cell · number · contact number
 
-    Returns:
-        List of target dicts: {key, name, website, phone, category}
-
-    Raises:
-        FileNotFoundError: if the input file doesn't exist.
-        ValueError: if required columns are missing.
+    Raises FileNotFoundError or ValueError on critical problems.
+    Returns list of target dicts: {key, name, website, phone, category}.
     """
     input_file = cfg["input_file"]
-    cols       = cfg.get("columns", {})
-    col_name   = cols.get("company_name", "Company Name")
-    col_web    = cols.get("website",      "Website")
-    col_cat    = cols.get("category",     "Category")
 
     if not os.path.exists(input_file):
         raise FileNotFoundError(f"Input file not found: {input_file}")
@@ -486,23 +660,68 @@ def load_input(cfg: dict) -> List[dict]:
     if not rows:
         raise ValueError("Input file is empty.")
 
-    file_cols = set(rows[0].keys())
-    required  = {col_name, col_web}
-    if not required.issubset(file_cols):
-        raise ValueError(
-            f"Input CSV must contain columns: {required}. Found: {file_cols}"
+    headers: List[str] = list(rows[0].keys())
+    cols = cfg.get("columns", {})
+
+    # ── Website column (required) ────────────────────────────────
+    col_web = cols.get("website") or ""
+    if not col_web or col_web not in headers:
+        col_web = _detect_column(
+            headers,
+            "website", "url", "domain", "site", "web", "link", "homepage",
         )
+    if not col_web:
+        raise ValueError(
+            f"Cannot find a website/URL column in your CSV.\n"
+            f"Columns found: {headers}\n"
+            f"Please add a column named 'Website', 'URL', or 'Domain'."
+        )
+
+    # ── Company name column (optional — falls back to first column) ──
+    col_name = cols.get("company_name") or ""
+    if not col_name or col_name not in headers:
+        col_name = _detect_column(
+            headers,
+            "company", "name", "organisation", "organization",
+            "business", "firm", "client", "account", "brand", "title",
+        )
+    if not col_name:
+        col_name = headers[0]
+        log(f"No company-name column detected — using first column: '{col_name}'", "warn")
+
+    # ── Category column (optional) ───────────────────────────────
+    col_cat = cols.get("category") or ""
+    if not col_cat or col_cat not in headers:
+        col_cat = _detect_column(
+            headers,
+            "category", "type", "sector", "industry",
+            "segment", "group", "vertical",
+        )
+    # col_cat may be None — that's fine, category is optional
+
+    # ── Pre-existing phone column (optional) ─────────────────────
+    col_phone_in = _detect_column(
+        headers,
+        "phone", "tel", "mobile", "cell", "number", "contact number",
+    )
+
+    log(
+        f"Columns → name='{col_name}'  website='{col_web}'"
+        + (f"  category='{col_cat}'" if col_cat else "")
+        + (f"  phone_in='{col_phone_in}'" if col_phone_in else "")
+    )
 
     return [
         {
             "key":      row[col_name].strip().lower(),
             "name":     row[col_name].strip(),
             "website":  row[col_web].strip(),
-            "phone":    row.get("Contact Number", "").strip(),
-            "category": row.get(col_cat, "").strip(),
+            # Carry through any pre-existing phone so it's preserved in output
+            "phone":    row.get(col_phone_in, "").strip() if col_phone_in else "",
+            "category": row.get(col_cat, "").strip()      if col_cat      else "",
         }
         for row in rows
-        if row.get(col_name, "").strip() and row.get(col_web, "").strip()
+        if row.get(col_web, "").strip()   # website is the only truly required field
     ]
 
 
@@ -513,53 +732,57 @@ def _csv_path(path: str) -> str:
 
 def load_existing_output(path: str, cfg: dict) -> dict:
     """
-    Load previously found emails from an existing output CSV (for resume support).
-    Reading from the CSV companion is always safe regardless of output format.
+    Load previously found contacts from an existing output CSV (for resume support).
+    A row is loaded if it has a non-empty email OR phone.
     """
     csv_p = _csv_path(path)
     if not os.path.exists(csv_p):
         return {}
 
     cols      = cfg.get("columns", {})
-    col_name  = cols.get("company_name", "Company Name")
-    col_web   = cols.get("website",      "Website")
-    col_email = cols.get("email",        "Email")
-    col_cat   = cols.get("category",     "Category")
+    col_name  = cols.get("company_name") or "Company Name"
+    col_web   = cols.get("website")      or "Website"
+    col_email = cols.get("email")        or "Email"
+    col_phone = cols.get("phone")        or "Phone"
+    col_cat   = cols.get("category")     or "Category"
 
-    found = {}
+    found: dict = {}
     with open(csv_p, newline="", encoding="utf-8-sig") as f:
         for row in csv.DictReader(f):
             key = row.get(col_name, "").strip().lower()
-            if key and row.get(col_email, "").strip():
+            if key and (row.get(col_email, "").strip() or row.get(col_phone, "").strip()):
                 found[key] = {
                     "name":     row.get(col_name,  ""),
                     "website":  row.get(col_web,   ""),
                     "email":    row.get(col_email, ""),
+                    "phone":    row.get(col_phone, ""),
                     "category": row.get(col_cat,   ""),
                 }
     return found
 
 
 def save_output_csv(found: dict, path: str, cfg: dict) -> None:
-    """Write found emails to a UTF-8 CSV file (always produced as a resume backup)."""
+    """Write found contacts to a UTF-8 CSV file (always produced as a resume backup)."""
     if not found:
         return
     cols      = cfg.get("columns", {})
-    col_name  = cols.get("company_name", "Company Name")
-    col_web   = cols.get("website",      "Website")
-    col_email = cols.get("email",        "Email")
-    col_cat   = cols.get("category",     "Category")
+    col_name  = cols.get("company_name") or "Company Name"
+    col_web   = cols.get("website")      or "Website"
+    col_email = cols.get("email")        or "Email"
+    col_phone = cols.get("phone")        or "Phone"
+    col_cat   = cols.get("category")     or "Category"
     csv_p     = _csv_path(path)
 
     with open(csv_p, "w", newline="", encoding="utf-8-sig") as f:
-        w = csv.DictWriter(f, fieldnames=[col_name, col_web, col_email, col_cat])
+        w = csv.DictWriter(f, fieldnames=[col_name, col_web, col_email, col_phone, col_cat])
         w.writeheader()
         for v in found.values():
             w.writerow({
-                col_name:  v["name"],
-                col_web:   v["website"],
-                col_email: v["email"],
-                col_cat:   v["category"],
+                col_name:  v.get("name",     ""),
+                col_web:   v.get("website",  ""),
+                col_email: v.get("email",    ""),
+                col_phone: v.get("phone",    ""),
+                col_cat:   v.get("category", ""),
             })
 
 
@@ -567,8 +790,8 @@ def save_output_xlsx(found: dict, path: str, cfg: dict, stats: dict) -> None:
     """
     Write results to an Excel workbook with two sheets:
 
-      Sheet 1 — Results    : one row per company with a found email
-      Sheet 2 — Run Stats  : summary metrics for the enrichment run
+      Sheet 1 — Results   : one row per company with found contact data
+      Sheet 2 — Run Stats : summary metrics for the enrichment run
 
     Falls back to CSV-only if openpyxl is not installed.
     """
@@ -584,10 +807,11 @@ def save_output_xlsx(found: dict, path: str, cfg: dict, stats: dict) -> None:
         return
 
     cols      = cfg.get("columns", {})
-    col_name  = cols.get("company_name", "Company Name")
-    col_web   = cols.get("website",      "Website")
-    col_email = cols.get("email",        "Email")
-    col_cat   = cols.get("category",     "Category")
+    col_name  = cols.get("company_name") or "Company Name"
+    col_web   = cols.get("website")      or "Website"
+    col_email = cols.get("email")        or "Email"
+    col_phone = cols.get("phone")        or "Phone"
+    col_cat   = cols.get("category")     or "Category"
 
     wb = Workbook()
 
@@ -597,7 +821,7 @@ def save_output_xlsx(found: dict, path: str, cfg: dict, stats: dict) -> None:
 
     HDR_FILL = PatternFill("solid", fgColor="2E4057")   # dark navy
     HDR_FONT = Font(color="FFFFFF", bold=True)
-    headers  = [col_name, col_web, col_email, col_cat]
+    headers  = [col_name, col_web, col_email, col_phone, col_cat]
 
     for ci, h in enumerate(headers, 1):
         cell = ws1.cell(row=1, column=ci, value=h)
@@ -606,15 +830,16 @@ def save_output_xlsx(found: dict, path: str, cfg: dict, stats: dict) -> None:
         cell.alignment = Alignment(horizontal="center")
 
     for ri, v in enumerate(found.values(), 2):
-        ws1.cell(row=ri, column=1, value=v["name"])
-        ws1.cell(row=ri, column=2, value=v["website"])
-        ws1.cell(row=ri, column=3, value=v["email"])
-        ws1.cell(row=ri, column=4, value=v["category"])
+        ws1.cell(row=ri, column=1, value=v.get("name",     ""))
+        ws1.cell(row=ri, column=2, value=v.get("website",  ""))
+        ws1.cell(row=ri, column=3, value=v.get("email",    ""))
+        ws1.cell(row=ri, column=4, value=v.get("phone",    ""))
+        ws1.cell(row=ri, column=5, value=v.get("category", ""))
 
-    for ci, width in enumerate([40, 45, 45, 30], 1):
+    for ci, width in enumerate([40, 45, 40, 25, 30], 1):
         ws1.column_dimensions[get_column_letter(ci)].width = width
 
-    ws1.freeze_panes = "A2"   # freeze header row
+    ws1.freeze_panes = "A2"
 
     # ── Sheet 2: Run Stats ────────────────────────────────────────
     ws2 = wb.create_sheet("Run Stats")
@@ -629,18 +854,27 @@ def save_output_xlsx(found: dict, path: str, cfg: dict, stats: dict) -> None:
         cell.font = STAT_FONT
 
     total   = stats.get("total", 0)
-    n_found = len(found)
-    pct     = f"{round(n_found / total * 100)}%" if total else "N/A"
+    n_email = sum(1 for v in found.values() if v.get("email"))
+    n_phone = sum(1 for v in found.values() if v.get("phone"))
+    n_any   = len(found)
+    pct_e   = f"{round(n_email / total * 100)}%" if total else "N/A"
+    pct_p   = f"{round(n_phone / total * 100)}%" if total else "N/A"
+    pct_any = f"{round(n_any   / total * 100)}%" if total else "N/A"
 
     stat_rows = [
-        ("Run Timestamp",   datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-        ("Companies Input", total),
-        ("Emails Found",    n_found),
-        ("Success Rate",    pct),
-        ("Still Missing",   total - n_found),
-        ("Pass 1 Found",    stats.get("pass1_found", 0)),
-        ("Pass 2 Found",    stats.get("pass2_found", 0)),
-        ("Time Elapsed",    stats.get("elapsed",     "")),
+        ("Run Timestamp",      datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        ("Input File",         stats.get("input_file", "")),
+        ("Companies Input",    total),
+        ("Contacts Found",     n_any),
+        ("  — Emails Found",   n_email),
+        ("  — Phones Found",   n_phone),
+        ("Email Success Rate", pct_e),
+        ("Phone Success Rate", pct_p),
+        ("Any Contact Rate",   pct_any),
+        ("Still Missing",      total - n_any),
+        ("Pass 1 Found",       stats.get("pass1_found", 0)),
+        ("Pass 2 Found",       stats.get("pass2_found", 0)),
+        ("Time Elapsed",       stats.get("elapsed",     "")),
     ]
     for ri, (metric, value) in enumerate(stat_rows, 2):
         ws2.cell(row=ri, column=1, value=metric)
@@ -740,41 +974,45 @@ def fetch_page(url: str, cfg: dict, wall_clock_limit: int = 10) -> Optional[str]
     return result[0] if result else None
 
 
-def enrich_one_http(target: dict, cfg: dict) -> str:
+def enrich_one_http(target: dict, cfg: dict) -> Tuple[str, str]:
     """
-    Pass 1: attempt to find a contact email via plain HTTP GET requests.
+    Pass 1: attempt to find a contact email AND phone via plain HTTP GET requests.
 
     Visits the homepage first, then iterates through contact_paths from cfg.
     Stops early once a high-quality (score ≤ 2) email is found.
     Rate limiting and UA rotation are applied on every request.
 
-    Returns the best email found, or '' if none qualify.
+    Returns (best_email, best_phone).  Either may be an empty string.
     """
     base          = target["website"].rstrip("/")
     contact_paths = cfg.get("contact_paths", ["/contact", "/about"])
     emails: List[str] = []
+    phones: List[str] = []
 
     # Homepage
     html = fetch_page(base, cfg)
     if html:
         emails.extend(extract_emails_full(html))
+        phones.extend(extract_phones(html))
     _rate_limit(cfg)
 
     # Early exit if an excellent email is already found
     if any(score_email(e, cfg) <= 2 for e in emails):
-        return best_email(emails, cfg)
+        return best_email(emails, cfg), phones[0] if phones else ""
 
     # Contact / about pages
     for path in contact_paths:
         html = fetch_page(base + path, cfg)
         if html:
-            found = extract_emails_full(html)
-            emails.extend(found)
-            if any(score_email(e, cfg) <= 2 for e in found):
+            found_emails = extract_emails_full(html)
+            found_phones = extract_phones(html)
+            emails.extend(found_emails)
+            phones.extend(found_phones)
+            if any(score_email(e, cfg) <= 2 for e in found_emails):
                 break
         _rate_limit(cfg)
 
-    return best_email(emails, cfg)
+    return best_email(emails, cfg), phones[0] if phones else ""
 
 
 # ================================================================
@@ -784,11 +1022,7 @@ def enrich_one_http(target: dict, cfg: dict) -> str:
 def _launch_browser(p, cfg: dict):
     """
     Launch a headless Chromium instance with media and tracking routes blocked.
-
-    Blocking image/font/analytics routes significantly reduces page load time
-    for large-scale runs. Retries up to 3 times before raising.
-
-    Returns (browser, page) tuple.
+    Retries up to 3 times before raising. Returns (browser, page) tuple.
     """
     ua     = random_ua(cfg)
     locale = cfg.get("locale", "en-US")
@@ -838,20 +1072,21 @@ def _dismiss_cookie_banner(page, cfg: dict) -> None:
             pass
 
 
-def enrich_one_browser(page, target: dict, cfg: dict) -> str:
+def enrich_one_browser(page, target: dict, cfg: dict) -> Tuple[str, str]:
     """
-    Pass 2: attempt to find a contact email using a Playwright-rendered browser.
+    Pass 2: find a contact email AND phone using a Playwright-rendered browser.
 
     Handles JS-rendered pages that return no extractable HTML to plain requests.
     Visits homepage + first two contact_paths from cfg.
     Dismisses cookie banners on the homepage visit.
 
-    Returns the best email found, or '' if none qualify.
+    Returns (best_email, best_phone).  Either may be an empty string.
     """
     base          = target["website"].rstrip("/")
     contact_paths = cfg.get("contact_paths", ["/contact", "/about"])
     pw_timeout    = cfg.get("playwright_timeout", 8000)
     emails: List[str] = []
+    phones: List[str] = []
 
     urls = [base] + [base + p for p in contact_paths[:2]]
 
@@ -860,14 +1095,16 @@ def enrich_one_browser(page, target: dict, cfg: dict) -> str:
             page.goto(url, wait_until="domcontentloaded", timeout=pw_timeout)
             if i == 0:
                 _dismiss_cookie_banner(page, cfg)
-            emails.extend(extract_emails_full(page.content()))
+            content = page.content()
+            emails.extend(extract_emails_full(content))
+            phones.extend(extract_phones(content))
             if any(score_email(e, cfg) <= 2 for e in emails):
                 break
         except Exception:
             continue
         _rate_limit(cfg)
 
-    return best_email(emails, cfg)
+    return best_email(emails, cfg), phones[0] if phones else ""
 
 
 # ================================================================
@@ -886,9 +1123,12 @@ def run_pass1(
     """
     Execute Pass 1: fast HTTP enrichment for all targets not yet in found.
 
-    Returns a list of targets that yielded no email and should be retried
-    in Pass 2 using Playwright.
+    Saves progress every 10 sites.
+    Returns a list of targets that yielded no contact data and should be
+    retried in Pass 2 using Playwright.
     """
+    global _active_bar
+
     todo     = [t for t in targets if t["key"] not in found]
     stop_at  = cfg.get("stop_at", "")
     ckpt     = cfg["checkpoint_file"]
@@ -901,55 +1141,82 @@ def run_pass1(
         log("Pass 1: nothing to process")
         return []
 
-    needs_pw: List[dict] = []
+    needs_pw:   List[dict] = []
     pass1_found = 0
     fail_streak = 0
 
-    for count, target in enumerate(todo, 1):
-        check_cmd_file(state, cmd_file, ckpt)
-        if should_stop(state, stop_at): break
-        wait_if_paused(state, ctx, cmd_file, ckpt)
-        if should_stop(state, stop_at): break
+    bar = _TqdmClass(
+        total=len(todo),
+        desc="  Pass 1 (HTTP)   ",
+        unit="site",
+        dynamic_ncols=True,
+        colour="cyan" if TQDM_AVAILABLE else None,
+    )
+    _active_bar = bar
 
-        email = enrich_one_http(target, cfg)
-        done.add(target["key"])
-        ctx["done"] = len(done)
+    try:
+        for count, target in enumerate(todo, 1):
+            check_cmd_file(state, cmd_file, ckpt)
+            if should_stop(state, stop_at): break
+            wait_if_paused(state, ctx, cmd_file, ckpt)
+            if should_stop(state, stop_at): break
 
-        if email:
-            found[target["key"]] = {
-                "name": target["name"], "website": target["website"],
-                "email": email,         "category": target["category"],
-            }
-            pass1_found += 1
-            ctx["found"] = pass1_found
-            fail_streak  = 0
-        else:
-            needs_pw.append(target)
-            fail_streak += 1
-            if fail_streak > 0 and fail_streak % 3 == 0:
-                wait_for_internet(state)
-                if should_stop(state, stop_at): break
-                fail_streak = 0
+            email, phone = enrich_one_http(target, cfg)
+            done.add(target["key"])
+            ctx["done"] = len(done)
 
-        if count % 50 == 0:
-            save_checkpoint(done, found, ckpt)
-            save_output(found, out_file, cfg)
-            check_disk()
+            if email or phone:
+                found[target["key"]] = {
+                    "name":     target["name"],
+                    "website":  target["website"],
+                    "email":    email,
+                    # Prefer freshly scraped phone; fall back to pre-existing
+                    "phone":    phone or target.get("phone", ""),
+                    "category": target["category"],
+                }
+                pass1_found += 1
+                ctx["found"] = pass1_found
+                fail_streak  = 0
+            else:
+                # Carry over any pre-existing phone data from the input CSV
+                if target.get("phone"):
+                    found[target["key"]] = {
+                        "name":     target["name"],
+                        "website":  target["website"],
+                        "email":    "",
+                        "phone":    target["phone"],
+                        "category": target["category"],
+                    }
+                    pass1_found += 1
+                    ctx["found"] = pass1_found
+                needs_pw.append(target)
+                fail_streak += 1
+                if fail_streak > 0 and fail_streak % 3 == 0:
+                    wait_for_internet(state)
+                    if should_stop(state, stop_at): break
+                    fail_streak = 0
 
-        rem   = len(todo) - count
-        eta   = int(rem * (time.time() - _start_time) / max(count, 1) / 60)
-        eta_s = f"~{eta // 60}h{eta % 60:02d}m" if eta >= 60 else f"~{eta}m"
-        pct   = round(count / len(todo) * 100)
-        print(
-            f"\r{elapsed():>9}   Pass1: {count}/{len(todo)} | "
-            f"found:{pass1_found} | {pct}% | ETA:{eta_s}    ",
-            end="", flush=True,
-        )
+            # Save every 10 sites
+            if count % 10 == 0:
+                save_checkpoint(done, found, ckpt)
+                save_output(found, out_file, cfg)
+                check_disk()
+
+            pct   = round(pass1_found / count * 100)
+            rem   = len(todo) - count
+            eta   = int(rem * (time.time() - _start_time) / max(count, 1) / 60)
+            eta_s = f"~{eta // 60}h{eta % 60:02d}m" if eta >= 60 else f"~{eta}m"
+            bar.set_postfix(found=pass1_found, hit=f"{pct}%", eta=eta_s)
+            bar.update(1)
+
+    finally:
+        _active_bar = None
+        bar.close()
 
     print()
     save_checkpoint(done, found, ckpt)
     save_output(found, out_file, cfg)
-    log(f"Pass 1 done — {pass1_found} emails found, "
+    log(f"Pass 1 done — {pass1_found} contacts found, "
         f"{len(needs_pw)} sites queued for Playwright", "good")
     return needs_pw
 
@@ -968,9 +1235,10 @@ def run_pass2(
     Execute Pass 2: Playwright-based enrichment for JS-heavy sites.
 
     The browser is restarted every browser_restart_every sites to prevent
-    memory accumulation during large runs. Progress is checkpointed every
-    25 sites.
+    memory accumulation during large runs. Progress is saved every 10 sites.
     """
+    global _active_bar
+
     todo          = [t for t in needs_pw if t["key"] not in found]
     stop_at       = cfg.get("stop_at", "")
     ckpt          = cfg["checkpoint_file"]
@@ -996,62 +1264,77 @@ def run_pass2(
     pass2_found = 0
     pw_count    = 0
 
-    with sync_playwright() as p:
-        browser, page = _launch_browser(p, cfg)
+    bar = _TqdmClass(
+        total=len(todo),
+        desc="  Pass 2 (Browser)",
+        unit="site",
+        dynamic_ncols=True,
+        colour="green" if TQDM_AVAILABLE else None,
+    )
+    _active_bar = bar
 
-        for count, target in enumerate(todo, 1):
-            check_cmd_file(state, cmd_file, ckpt)
-            if should_stop(state, stop_at): break
-            wait_if_paused(state, ctx, cmd_file, ckpt)
-            if should_stop(state, stop_at): break
+    try:
+        with sync_playwright() as p:
+            browser, page = _launch_browser(p, cfg)
 
-            if count % 25 == 0:
-                if not check_disk(): break
-                save_checkpoint(done, found, ckpt)
-                save_output(found, out_file, cfg, stats)
-                wait_for_internet(state)
+            for count, target in enumerate(todo, 1):
+                check_cmd_file(state, cmd_file, ckpt)
+                if should_stop(state, stop_at): break
+                wait_if_paused(state, ctx, cmd_file, ckpt)
                 if should_stop(state, stop_at): break
 
-            # Periodic browser restart prevents memory accumulation
-            if pw_count > 0 and pw_count % restart_every == 0:
-                log(f"Restarting browser after {pw_count} sites …", "dim")
-                try: browser.close()
-                except Exception: pass
-                time.sleep(2)
-                browser, page = _launch_browser(p, cfg)
+                # Periodic browser restart prevents memory accumulation
+                if pw_count > 0 and pw_count % restart_every == 0:
+                    log(f"Restarting browser after {pw_count} sites …", "dim")
+                    try: browser.close()
+                    except Exception: pass
+                    time.sleep(2)
+                    browser, page = _launch_browser(p, cfg)
 
-            email = enrich_one_browser(page, target, cfg)
-            done.add(target["key"])
-            pw_count += 1
-            ctx["done"] = len(done)
+                email, phone = enrich_one_browser(page, target, cfg)
+                done.add(target["key"])
+                pw_count += 1
+                ctx["done"] = len(done)
 
-            if email:
-                found[target["key"]] = {
-                    "name": target["name"], "website": target["website"],
-                    "email": email,         "category": target["category"],
-                }
-                pass2_found += 1
-                ctx["found"]        = pass2_found
-                stats["pass2_found"] = pass2_found
+                if email or phone:
+                    found[target["key"]] = {
+                        "name":     target["name"],
+                        "website":  target["website"],
+                        "email":    email,
+                        "phone":    phone or target.get("phone", ""),
+                        "category": target["category"],
+                    }
+                    pass2_found += 1
+                    ctx["found"]         = pass2_found
+                    stats["pass2_found"] = pass2_found
 
-            rem   = len(todo) - count
-            eta   = int(rem * 3 / 60)
-            eta_s = f"~{eta // 60}h{eta % 60:02d}m" if eta >= 60 else f"~{eta}m"
-            pct   = round(pass2_found / count * 100)
-            print(
-                f"\r{elapsed():>9}   Pass2: {count}/{len(todo)} | "
-                f"found:{pass2_found} ({pct}%) | ETA:{eta_s}    ",
-                end="", flush=True,
-            )
-            time.sleep(0.1)
+                # Save every 10 sites
+                if count % 10 == 0:
+                    if not check_disk(): break
+                    save_checkpoint(done, found, ckpt)
+                    save_output(found, out_file, cfg, stats)
+                    wait_for_internet(state)
+                    if should_stop(state, stop_at): break
 
-        try: browser.close()
-        except Exception: pass
+                rem   = len(todo) - count
+                eta   = int(rem * 3 / 60)
+                eta_s = f"~{eta // 60}h{eta % 60:02d}m" if eta >= 60 else f"~{eta}m"
+                pct   = round(pass2_found / count * 100)
+                bar.set_postfix(found=pass2_found, hit=f"{pct}%", eta=eta_s)
+                bar.update(1)
+                time.sleep(0.1)
+
+            try: browser.close()
+            except Exception: pass
+
+    finally:
+        _active_bar = None
+        bar.close()
 
     print()
     save_checkpoint(done, found, ckpt)
     save_output(found, out_file, cfg, stats)
-    log(f"Pass 2 done — {pass2_found} additional emails found via Playwright", "good")
+    log(f"Pass 2 done — {pass2_found} additional contacts found via Playwright", "good")
 
 
 # ================================================================
@@ -1062,18 +1345,21 @@ def parse_args() -> argparse.Namespace:
     """Define and parse CLI arguments."""
     parser = argparse.ArgumentParser(
         prog="enricher",
-        description="Email Enrichment Tool — scrape contact emails from company websites.",
+        description=(
+            "Email & Phone Enrichment Tool — "
+            "scrape contact emails and phone numbers from company websites."
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python enricher.py
+  python enricher.py                          # auto-detect CSV in current directory
   python enricher.py --input companies.csv
   python enricher.py --input leads.csv --config my_config.yaml
   python enricher.py --fresh                  # ignore checkpoint, start over
   python enricher.py --output results.xlsx    # override output path
         """,
     )
-    parser.add_argument("--input",  "-i", help="Path to input CSV (overrides config)")
+    parser.add_argument("--input",  "-i", help="Path to input CSV (overrides config and auto-detection)")
     parser.add_argument("--output", "-o", help="Path to output file (overrides config)")
     parser.add_argument("--config", "-c", default="config.yaml",
                         help="Path to YAML config file (default: config.yaml)")
@@ -1086,13 +1372,15 @@ def _print_banner() -> None:
     os_name = platform.system()
     print()
     print("╔══════════════════════════════════════════════════╗")
-    print("║   Email Enrichment Tool                          ║")
+    print("║   Email & Phone Enrichment Tool                  ║")
     print("║   Pass 1: HTTP  →  Pass 2: Playwright fallback   ║")
     print("╚══════════════════════════════════════════════════╝")
     if os_name == "Windows":
         print("  Controls: P=pause  R=resume  Q=quit  S=status")
     else:
         print("  Controls: type P / R / Q / S  then  Enter")
+    if not TQDM_AVAILABLE:
+        print("  Tip: pip install tqdm  for a richer progress bar")
     print()
 
 
@@ -1103,14 +1391,18 @@ def _print_summary(
     stats:    dict,
     partial:  bool = False,
 ) -> None:
-    total = len(targets)
-    n     = len(found)
+    total   = len(targets)
+    n_email = sum(1 for v in found.values() if v.get("email"))
+    n_phone = sum(1 for v in found.values() if v.get("phone"))
+    n_any   = len(found)
     print()
     print("╔══════════════════════════════════════════════════╗")
     log(f"  {'PARTIAL — re-run to continue' if partial else 'COMPLETE'}")
     log(f"  Companies input  : {total}")
-    log(f"  Emails found     : {n}  ({round(n / total * 100) if total else 0}%)")
-    log(f"  Still missing    : {total - n}")
+    log(f"  Contacts found   : {n_any}  ({round(n_any / total * 100) if total else 0}%)")
+    log(f"    — Emails       : {n_email}  ({round(n_email / total * 100) if total else 0}%)")
+    log(f"    — Phones       : {n_phone}  ({round(n_phone / total * 100) if total else 0}%)")
+    log(f"  Still missing    : {total - n_any}")
     log(f"  Pass 1 found     : {stats.get('pass1_found', 0)}")
     log(f"  Pass 2 found     : {stats.get('pass2_found', 0)}")
     log(f"  Time elapsed     : {elapsed()}")
@@ -1121,13 +1413,14 @@ def _print_summary(
 
 def main() -> None:
     """
-    Orchestrate the two-pass email enrichment pipeline.
+    Orchestrate the two-pass email & phone enrichment pipeline.
 
       1. Load config (YAML + CLI overrides)
-      2. Load input CSV
-      3. Pass 1 — fast HTTP requests
-      4. Pass 2 — Playwright fallback for JS-heavy sites
-      5. Save Excel + CSV output with run statistics
+      2. Auto-detect or validate input CSV
+      3. Auto-detect columns (website, name, category, phone)
+      4. Pass 1 — fast HTTP requests with background auto-save
+      5. Pass 2 — Playwright fallback for JS-heavy sites with background auto-save
+      6. Save Excel + CSV output with run statistics
     """
     global _start_time
     _start_time = time.time()
@@ -1144,9 +1437,26 @@ def main() -> None:
 
     _print_banner()
 
+    # ── Auto-detect input file ────────────────────────────────────
+    if not cfg.get("input_file"):
+        detected = find_input_file()
+        if not detected:
+            log("No input CSV found in current directory.", "error")
+            log("Usage: python enricher.py --input path/to/file.csv", "info")
+            return
+        cfg["input_file"] = detected
+        log(f"Auto-detected input: {detected}", "good")
+
+    # ── State and statistics ──────────────────────────────────────
     state = State()
     ctx:   dict = {"found": 0, "done": 0}
-    stats: dict = {"pass1_found": 0, "pass2_found": 0, "total": 0, "elapsed": ""}
+    stats: dict = {
+        "pass1_found": 0,
+        "pass2_found": 0,
+        "total":       0,
+        "elapsed":     "",
+        "input_file":  cfg["input_file"],
+    }
 
     ckpt = cfg["checkpoint_file"]
 
@@ -1170,16 +1480,18 @@ def main() -> None:
         return
 
     stats["total"] = len(targets)
-    log(f"Loaded {len(targets)} companies")
+    log(f"Loaded {len(targets)} rows from CSV")
 
     if not targets:
         log("Nothing to process.", "warn")
         return
 
-    # Category distribution
-    cats = Counter(t["category"] for t in targets)
-    for cat, n in sorted(cats.items(), key=lambda x: -x[1]):
-        log(f"  {cat:<42} {n}", "dim")
+    # Category distribution (optional)
+    cats = Counter(t["category"] for t in targets if t.get("category"))
+    if cats:
+        log("Category breakdown:")
+        for cat, n in sorted(cats.items(), key=lambda x: -x[1]):
+            log(f"  {cat:<42} {n}", "dim")
     print()
 
     # Resume from checkpoint
@@ -1188,7 +1500,7 @@ def main() -> None:
     done: Set[str] = set()
 
     if found:
-        log(f"Resuming — {len(found)} emails already found", "good")
+        log(f"Resuming — {len(found)} contacts already in cache", "good")
         _beep("resume")
     else:
         log("Fresh start", "good")
@@ -1196,9 +1508,13 @@ def main() -> None:
 
     ctx["done"] = len(found)
 
+    autosave_interval = cfg.get("autosave_interval", 60)
+
     # ── Pass 1 ────────────────────────────────────────────────────
+    auto_saver1 = AutoSaver(found, out_file, cfg, stats, interval=autosave_interval)
     needs_pw = run_pass1(targets, done, found, out_file, state, ctx, cfg)
     stats["pass1_found"] = len(found)
+    auto_saver1.stop()
 
     if should_stop(state, cfg.get("stop_at", "")):
         save_checkpoint(done, found, ckpt)
@@ -1209,7 +1525,9 @@ def main() -> None:
     print()
 
     # ── Pass 2 ────────────────────────────────────────────────────
+    auto_saver2 = AutoSaver(found, out_file, cfg, stats, interval=autosave_interval)
     run_pass2(needs_pw, done, found, out_file, state, ctx, cfg, stats)
+    auto_saver2.stop()
 
     stats["elapsed"] = elapsed()
     save_checkpoint(done, found, ckpt)

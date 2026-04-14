@@ -1,0 +1,86 @@
+# ================================================================
+# Email & Phone Enrichment Tool — .gitignore
+# ================================================================
+
+
+# ---------------------------------------------------------------
+# Tool runtime files  (generated during a run — never commit these)
+# ---------------------------------------------------------------
+enrich_checkpoint.json
+command.txt
+found_contacts_*.xlsx
+found_contacts_*.csv
+found_emails_*.xlsx
+found_emails_*.csv
+
+
+# ---------------------------------------------------------------
+# Input data  (keep your leads private)
+# ---------------------------------------------------------------
+*.csv
+# Un-ignore the sample file if you want to commit it:
+# !sample_input.csv
+
+
+# ---------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+develop-eggs/
+.installed.cfg
+lib/
+lib64/
+MANIFEST
+
+
+# ---------------------------------------------------------------
+# Virtual environments
+# ---------------------------------------------------------------
+.venv/
+venv/
+ENV/
+env/
+.env
+
+
+# ---------------------------------------------------------------
+# Playwright browser binaries  (downloaded on first run via CLI)
+# ---------------------------------------------------------------
+# These are stored in the OS user directory by default, not here.
+# Uncomment the line below only if you explicitly set PLAYWRIGHT_BROWSERS_PATH=.
+# ms-playwright/
+
+
+# ---------------------------------------------------------------
+# IDE & OS
+# ---------------------------------------------------------------
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+
+
+# ---------------------------------------------------------------
+# Logs
+# ---------------------------------------------------------------
+*.log
+logs/
