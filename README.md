@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Email Enrichment Tool
 
 > Automatically scrape contact email addresses from a list of company websites — with a two-pass architecture, checkpoint/resume, Excel output, and cross-platform controls.
@@ -209,3 +210,7 @@ email-enrichment-tool/
 - Respects `robots.txt` is **not** enforced automatically — ensure your use case complies with each site's terms of service.
 - SSL certificate errors are suppressed to handle sites with expired or self-signed certificates.
 - The tool does not store or transmit data externally — all output is written locally.
+=======
+# Enrich-Emails
+Python-based email enrichment tool with a configurable enricher and optional portfolio data scraping.
+>>>>>>> 8608e3246ff106b3ad3a055c4696762c3b28bed2
