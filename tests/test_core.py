@@ -17,6 +17,7 @@ Coverage:
 
 import json
 import os
+import re
 import sys
 
 import pytest
@@ -27,12 +28,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from enricher import (
     DEFAULT_CONFIG,
     best_email,
+    best_phone,
     decode_cloudflare_email,
     extract_emails_full,
+    extract_phones,
     load_checkpoint,
     load_config,
     save_checkpoint,
     score_email,
+    _can_fetch,
 )
 
 
@@ -410,3 +414,188 @@ class TestLoadConfig:
         cfg = load_config(str(yaml_file))
         assert cfg["columns"]["company_name"] == "Organisation"
         assert cfg["columns"]["website"]      == "Website"   # default preserved
+
+    def test_yaml_list_override(self, tmp_path):
+        """A YAML list must fully replace the default list (not merge into it)."""
+        yaml_file = tmp_path / "cfg.yaml"
+        yaml_file.write_text("contact_paths:\n  - /kontakt\n")
+        cfg = load_config(str(yaml_file))
+        assert cfg["contact_paths"] == ["/kontakt"]
+
+    def test_yaml_unknown_key_is_added(self, tmp_path):
+        """An unrecognised YAML key must be stored, not silently dropped."""
+        yaml_file = tmp_path / "cfg.yaml"
+        yaml_file.write_text("my_custom_key: 42\n")
+        cfg = load_config(str(yaml_file))
+        assert cfg.get("my_custom_key") == 42
+
+
+# ================================================================
+# 7. extract_phones()
+# ================================================================
+
+class TestExtractPhones:
+    """extract_phones(html) → list of phone strings."""
+
+    def test_tel_href_extracted(self):
+        """A tel: href is the highest-confidence source and must always be found."""
+        html   = '<a href="tel:+442071234567">Call us</a>'
+        result = extract_phones(html)
+        assert any("442071234567" in re.sub(r"\D", "", p) for p in result)
+
+    def test_international_format_regex(self):
+        """An international number with no tel: link must be found via regex."""
+        html   = "<p>Call +44 20 7123 4567 for enquiries.</p>"
+        result = extract_phones(html)
+        assert len(result) > 0
+        assert any("44" in re.sub(r"\D", "", p) for p in result)
+
+    def test_bracketed_area_code(self):
+        """Bracketed area code format (020) 7123 4567 must be recognised."""
+        html   = "<p>Phone: (020) 7123 4567</p>"
+        result = extract_phones(html)
+        assert len(result) > 0
+
+    def test_no_phones_returns_empty(self):
+        html = "<p>No contact info here.</p>"
+        assert extract_phones(html) == []
+
+    def test_empty_html_returns_empty(self):
+        assert extract_phones("") == []
+
+    def test_too_short_digits_excluded(self):
+        """Strings with fewer than 7 digits must not be returned."""
+        html   = "<p>Code: 12345</p>"
+        result = extract_phones(html)
+        assert not any(len(re.sub(r"\D", "", p)) < 7 for p in result)
+
+    def test_duplicate_numbers_deduplicated(self):
+        """The same phone number appearing twice must only appear once."""
+        html   = '<a href="tel:+442071234567">Call</a> or dial +44 20 7123 4567'
+        result = extract_phones(html)
+        digit_sets = [re.sub(r"\D", "", p) for p in result]
+        assert len(digit_sets) == len(set(digit_sets))
+
+
+# ================================================================
+# 8. best_phone()
+# ================================================================
+
+class TestBestPhone:
+    """best_phone(phones) → single best phone string or first valid."""
+
+    def test_empty_list_returns_empty(self):
+        assert best_phone([]) == ""
+
+    def test_single_phone_returned(self):
+        assert best_phone(["+44 20 7000 0000"]) == "+44 20 7000 0000"
+
+    def test_international_preferred_over_local(self):
+        """A number starting with + must score better than a plain local number."""
+        phones = ["020 7000 0000", "+44 20 7000 0000", "0800 123 456"]
+        assert best_phone(phones) == "+44 20 7000 0000"
+
+    def test_too_short_skipped(self):
+        """A string with fewer than 7 digits must be treated as invalid."""
+        phones = ["12345", "+44 20 7000 0000"]
+        assert best_phone(phones) == "+44 20 7000 0000"
+
+    def test_too_short_only_falls_back(self):
+        """If all numbers are invalid, fall back to the raw first entry."""
+        phones = ["123"]
+        result = best_phone(phones)
+        assert result == "123"   # fallback, not empty
+
+
+# ================================================================
+# 9. _can_fetch() — robots.txt compliance
+# ================================================================
+
+class TestCanFetch:
+    """_can_fetch(url) checks robots.txt; fails open on errors."""
+
+    def test_unreachable_domain_fails_open(self):
+        """A domain that doesn't exist must return True (fail open), not raise."""
+        result = _can_fetch("https://this-domain-does-not-exist-xyz123.example/")
+        assert result is True
+
+    def test_disallow_all_respected(self, tmp_path, monkeypatch):
+        """
+        Simulate a robots.txt that disallows all agents on all paths.
+        Monkeypatches RobotFileParser.read() so no real HTTP call is made.
+        """
+        import urllib.robotparser
+
+        class _FakeRFP:
+            def __init__(self, url): pass
+            def read(self): pass
+            def can_fetch(self, agent, url): return False
+
+        monkeypatch.setattr(urllib.robotparser, "RobotFileParser", _FakeRFP)
+        assert _can_fetch("https://blocked-site.com/page") is False
+
+    def test_allow_all_respected(self, monkeypatch):
+        """Simulate a robots.txt that allows everything."""
+        import urllib.robotparser
+
+        class _FakeRFP:
+            def __init__(self, url): pass
+            def read(self): pass
+            def can_fetch(self, agent, url): return True
+
+        monkeypatch.setattr(urllib.robotparser, "RobotFileParser", _FakeRFP)
+        assert _can_fetch("https://open-site.com/") is True
+
+    def test_exception_during_read_fails_open(self, monkeypatch):
+        """If robots.txt parsing raises, must return True (fail open)."""
+        import urllib.robotparser
+
+        class _BrokenRFP:
+            def __init__(self, url): pass
+            def read(self): raise ConnectionError("network gone")
+            def can_fetch(self, agent, url): return False
+
+        monkeypatch.setattr(urllib.robotparser, "RobotFileParser", _BrokenRFP)
+        assert _can_fetch("https://any-site.com/") is True
+
+
+# ================================================================
+# 10. Extra email filter coverage
+# ================================================================
+
+class TestEmailFilterEdgeCases:
+    """Regression tests for specific false-positive / false-negative bugs."""
+
+    def test_jpeg_extension_not_returned_as_email(self):
+        """.jpeg (not just .jpg) in an address must be filtered as an asset path."""
+        html   = '<img src="logo@2x-large.jpeg" />'
+        result = extract_emails_full(html)
+        assert not any(".jpeg" in e for e in result)
+
+    def test_jpg_extension_still_filtered(self):
+        """Original .jpg filter must still work after the .jpeg addition."""
+        html   = '<img src="banner@2x.jpg" />'
+        result = extract_emails_full(html)
+        assert not any(".jpg" in e for e in result)
+
+    def test_placeholder_domain_com_filtered(self):
+        """user@domain.com is a placeholder and must score 999."""
+        cfg = _cfg()
+        assert score_email("user@domain.com", cfg) == 999
+
+    def test_placeholder_email_com_filtered(self):
+        """name@email.com is a placeholder and must score 999."""
+        cfg = _cfg()
+        assert score_email("name@email.com", cfg) == 999
+
+    def test_real_email_on_similar_domain_not_filtered(self):
+        """info@mydomain.com must NOT be caught by the domain.com junk filter."""
+        cfg = _cfg()
+        assert score_email("info@mydomain.com", cfg) != 999
+
+    def test_long_email_filtered(self):
+        """An address longer than 80 chars must be dropped."""
+        long_email = "a" * 70 + "@example.org"
+        html       = f"<p>{long_email}</p>"
+        result     = extract_emails_full(html)
+        assert long_email.lower() not in result
