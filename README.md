@@ -35,6 +35,10 @@ Results are written to a formatted Excel workbook with a Run Stats sheet, plus a
 - **Fully config-driven** — `config.yaml` controls everything; CLI args override at runtime
 
 ---
+## Preview
+
+![Terminal progress](Assets/terminal_progress.png)
+![Excel output](Assets/output_preview.png)
 
 ## Tech Stack
 
