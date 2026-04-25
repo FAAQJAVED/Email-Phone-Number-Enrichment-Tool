@@ -127,7 +127,7 @@ DEFAULT_CONFIG: dict = {
     # These are the OUTPUT column names written to the results file.
     "columns": {
         "company_name": "",       # auto-detect
-        "website":      "",       # auto-detect
+        "website":      "Website",
         "email":        "Email",
         "phone":        "Phone",
         "category":     "",       # auto-detect (optional)
