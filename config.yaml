@@ -126,7 +126,7 @@ locale: "en-US"
 #               Optional — silently omitted if not found.
 columns:
   company_name: ""       # blank = auto-detect
-  website:      ""       # blank = auto-detect
+  website:      "Website"
   email:        "Email"
   phone:        "Phone"
   category:     ""       # blank = auto-detect (optional)
@@ -193,6 +193,10 @@ junk_email_domains:
   - googleapis.com
   - cloudflare.com
   - jquery.com
+  - domain.com        # placeholder: user@domain.com
+  - email.com         # placeholder: name@email.com
+  - test.com
+  - mailinator.com
 
 
 # ---------------------------------------------------------------
