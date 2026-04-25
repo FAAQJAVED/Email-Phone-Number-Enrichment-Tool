@@ -54,8 +54,8 @@ Results are written to a formatted Excel workbook with a Run Stats sheet, plus a
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/email-enrichment-tool.git
-cd email-enrichment-tool
+git clone https://github.com/FAAQJAVED/Email-Phone-Number-Enrichment-Tool.git
+cd Email-Phone-Number-Enrichment-Tool
 ```
 
 ### 2. Install Python dependencies
