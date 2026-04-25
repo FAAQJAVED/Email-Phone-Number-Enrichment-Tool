@@ -512,51 +512,80 @@ class TestBestPhone:
 # ================================================================
 
 class TestCanFetch:
-    """_can_fetch(url) checks robots.txt; fails open on errors."""
+    """_can_fetch(url) checks robots.txt; fails open on errors; caches per domain."""
 
     def test_unreachable_domain_fails_open(self):
         """A domain that doesn't exist must return True (fail open), not raise."""
         result = _can_fetch("https://this-domain-does-not-exist-xyz123.example/")
         assert result is True
 
-    def test_disallow_all_respected(self, tmp_path, monkeypatch):
-        """
-        Simulate a robots.txt that disallows all agents on all paths.
-        Monkeypatches RobotFileParser.read() so no real HTTP call is made.
-        """
-        import urllib.robotparser
+    def test_disallow_all_respected(self, monkeypatch):
+        """A robots.txt with Disallow: / for all agents must cause False."""
+        import enricher
 
-        class _FakeRFP:
-            def __init__(self, url): pass
-            def read(self): pass
-            def can_fetch(self, agent, url): return False
+        class _Resp:
+            status_code = 200
+            text        = "User-agent: *\nDisallow: /\n"
 
-        monkeypatch.setattr(urllib.robotparser, "RobotFileParser", _FakeRFP)
+        monkeypatch.setattr(enricher, "_robots_cache", {})
+        monkeypatch.setattr(enricher.requests, "get", lambda *a, **kw: _Resp())
         assert _can_fetch("https://blocked-site.com/page") is False
 
     def test_allow_all_respected(self, monkeypatch):
-        """Simulate a robots.txt that allows everything."""
-        import urllib.robotparser
+        """A robots.txt with an empty Disallow must allow access."""
+        import enricher
 
-        class _FakeRFP:
-            def __init__(self, url): pass
-            def read(self): pass
-            def can_fetch(self, agent, url): return True
+        class _Resp:
+            status_code = 200
+            text        = "User-agent: *\nDisallow:\n"
 
-        monkeypatch.setattr(urllib.robotparser, "RobotFileParser", _FakeRFP)
+        monkeypatch.setattr(enricher, "_robots_cache", {})
+        monkeypatch.setattr(enricher.requests, "get", lambda *a, **kw: _Resp())
         assert _can_fetch("https://open-site.com/") is True
 
-    def test_exception_during_read_fails_open(self, monkeypatch):
-        """If robots.txt parsing raises, must return True (fail open)."""
-        import urllib.robotparser
+    def test_404_robots_fails_open(self, monkeypatch):
+        """A 404 for robots.txt means no restrictions — must return True."""
+        import enricher
 
-        class _BrokenRFP:
-            def __init__(self, url): pass
-            def read(self): raise ConnectionError("network gone")
-            def can_fetch(self, agent, url): return False
+        class _Resp:
+            status_code = 404
+            text        = ""
 
-        monkeypatch.setattr(urllib.robotparser, "RobotFileParser", _BrokenRFP)
+        monkeypatch.setattr(enricher, "_robots_cache", {})
+        monkeypatch.setattr(enricher.requests, "get", lambda *a, **kw: _Resp())
+        assert _can_fetch("https://no-robots-txt.com/") is True
+
+    def test_network_error_during_fetch_fails_open(self, monkeypatch):
+        """If the robots.txt fetch itself raises, must return True (fail open)."""
+        import enricher
+
+        def _raise(*a, **kw):
+            raise ConnectionError("network gone")
+
+        monkeypatch.setattr(enricher, "_robots_cache", {})
+        monkeypatch.setattr(enricher.requests, "get", _raise)
         assert _can_fetch("https://any-site.com/") is True
+
+    def test_result_cached_per_domain(self, monkeypatch):
+        """robots.txt must be fetched at most once per domain, even for different paths."""
+        import enricher
+
+        call_count = [0]
+
+        class _Resp:
+            status_code = 200
+            text        = "User-agent: *\nDisallow:\n"
+
+        def _counting_get(*a, **kw):
+            call_count[0] += 1
+            return _Resp()
+
+        monkeypatch.setattr(enricher, "_robots_cache", {})
+        monkeypatch.setattr(enricher.requests, "get", _counting_get)
+        _can_fetch("https://cached-site.com/page1")
+        _can_fetch("https://cached-site.com/page2")
+        _can_fetch("https://cached-site.com/contact")
+        assert call_count[0] == 1   # only one robots.txt fetch for the whole domain
 
 
 # ================================================================
