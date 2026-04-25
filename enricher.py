@@ -567,7 +567,7 @@ def score_email(email: str, cfg: dict) -> int:
     junk_domains = set(cfg.get("junk_email_domains",     []))
 
     if any(k in local  for k in skip_kws):     return 999
-    if any(j in domain for j in junk_domains): return 999
+    if domain in junk_domains:                  return 999
     if not any(k in local for k in generic_kws): return 1   # personal name
     if local in {"info", "hello", "contact", "enquiries", "enquiry"}: return 2
     return 3
