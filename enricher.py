@@ -47,6 +47,7 @@ import select
 import threading
 import argparse
 import platform
+import urllib.robotparser
 from datetime import datetime, date
 from collections import Counter
 from pathlib import Path
@@ -148,6 +149,7 @@ DEFAULT_CONFIG: dict = {
     "junk_email_domains": [
         "sentry.io", "wixpress.com", "example.com", "schema.org", "w3.org",
         "googleapis.com", "cloudflare.com", "jquery.com",
+        "domain.com", "email.com", "test.com", "mailinator.com",  # placeholder domains
     ],
 
     # ── Cookie Banner Dismissal ──────────────────────────────────
@@ -365,10 +367,12 @@ def check_cmd_file(state: State, cmd_file: str, checkpoint_file: str) -> None:
     if not os.path.exists(cmd_file):
         return
     try:
-        cmd = open(cmd_file).read().strip().lower()
+        with open(cmd_file, encoding="utf-8") as fh:
+            cmd = fh.read().strip().lower()
         if not cmd:
             return
-        open(cmd_file, "w").write("")
+        with open(cmd_file, "w", encoding="utf-8") as fh:
+            fh.write("")
 
         if cmd == "pause":
             state.paused = True;  log("PAUSED (cmd file)", "warn");   _beep("stop")
@@ -463,7 +467,7 @@ def extract_emails_raw(html: str) -> List[str]:
         e = e.lower().strip().strip('.,;"\'')
         if not re.match(r"^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$", e):
             continue
-        if any(ext in e for ext in [".png", ".jpg", ".svg", ".gif", ".css", ".js"]):
+        if any(ext in e for ext in [".png", ".jpg", ".jpeg", ".svg", ".gif", ".css", ".js"]):
             continue
         if len(e) > 80:
             continue
@@ -575,6 +579,36 @@ def best_email(emails: List[str], cfg: dict) -> str:
     valid  = [(e, s) for e, s in scored if s < 999]
     if not valid:
         return ""
+    return min(valid, key=lambda x: x[1])[0]
+
+
+def best_phone(phones: List[str]) -> str:
+    """
+    Return the single highest-confidence phone number from a list.
+
+    Preference order:
+      1. International format starting with +  (e.g. +44 20 7123 4567)
+      2. Any other number with a valid digit count (7–15 digits)
+
+    extract_phones() already surfaces tel: href numbers first, so index 0
+    is usually correct — but this scorer adds an explicit quality gate so
+    obviously bad strings (too few digits, truncated) are never returned.
+    """
+    if not phones:
+        return ""
+
+    def _score(p: str) -> int:
+        digits = re.sub(r"\D", "", p)
+        if not 7 <= len(digits) <= 15:
+            return 999
+        if p.strip().startswith("+"):
+            return 1
+        return 2
+
+    scored = [(p, _score(p)) for p in phones]
+    valid  = [(p, s) for p, s in scored if s < 999]
+    if not valid:
+        return phones[0]   # fallback — return raw rather than nothing
     return min(valid, key=lambda x: x[1])[0]
 
 
@@ -919,6 +953,24 @@ def load_checkpoint(checkpoint_file: str) -> Tuple[Set[str], dict]:
 # NETWORK — helpers
 # ================================================================
 
+def _can_fetch(url: str) -> bool:
+    """
+    Return True if the site's robots.txt permits scraping *url*.
+
+    Uses the standard-library RobotFileParser against the wildcard agent ("*").
+    Fails open (returns True) on any network or parse error — a transient
+    connectivity problem or missing robots.txt must never silently block a run.
+    """
+    try:
+        from urllib.parse import urlparse
+        parsed     = urlparse(url if url.startswith("http") else "https://" + url)
+        robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
+        rp         = urllib.robotparser.RobotFileParser(robots_url)
+        rp.read()
+        return rp.can_fetch("*", url)
+    except Exception:
+        return True   # fail open
+
 def random_ua(cfg: dict) -> str:
     """Pick a random User-Agent string from the configured pool."""
     pool = cfg.get("user_agents", [])
@@ -978,9 +1030,9 @@ def enrich_one_http(target: dict, cfg: dict) -> Tuple[str, str]:
     """
     Pass 1: attempt to find a contact email AND phone via plain HTTP GET requests.
 
-    Visits the homepage first, then iterates through contact_paths from cfg.
-    Stops early once a high-quality (score ≤ 2) email is found.
-    Rate limiting and UA rotation are applied on every request.
+    Checks robots.txt before fetching. Visits the homepage first, then iterates
+    through contact_paths from cfg. Stops early once a high-quality (score ≤ 2)
+    email is found. Rate limiting and UA rotation are applied on every request.
 
     Returns (best_email, best_phone).  Either may be an empty string.
     """
@@ -988,6 +1040,10 @@ def enrich_one_http(target: dict, cfg: dict) -> Tuple[str, str]:
     contact_paths = cfg.get("contact_paths", ["/contact", "/about"])
     emails: List[str] = []
     phones: List[str] = []
+
+    if not _can_fetch(base):
+        log(f"robots.txt disallows: {base} — skipping", "warn")
+        return "", ""
 
     # Homepage
     html = fetch_page(base, cfg)
@@ -998,7 +1054,7 @@ def enrich_one_http(target: dict, cfg: dict) -> Tuple[str, str]:
 
     # Early exit if an excellent email is already found
     if any(score_email(e, cfg) <= 2 for e in emails):
-        return best_email(emails, cfg), phones[0] if phones else ""
+        return best_email(emails, cfg), best_phone(phones)
 
     # Contact / about pages
     for path in contact_paths:
@@ -1012,7 +1068,7 @@ def enrich_one_http(target: dict, cfg: dict) -> Tuple[str, str]:
                 break
         _rate_limit(cfg)
 
-    return best_email(emails, cfg), phones[0] if phones else ""
+    return best_email(emails, cfg), best_phone(phones)
 
 
 # ================================================================
@@ -1076,9 +1132,9 @@ def enrich_one_browser(page, target: dict, cfg: dict) -> Tuple[str, str]:
     """
     Pass 2: find a contact email AND phone using a Playwright-rendered browser.
 
-    Handles JS-rendered pages that return no extractable HTML to plain requests.
-    Visits homepage + first two contact_paths from cfg.
-    Dismisses cookie banners on the homepage visit.
+    Checks robots.txt before fetching. Handles JS-rendered pages that return no
+    extractable HTML to plain requests. Visits homepage + first two contact_paths
+    from cfg. Dismisses cookie banners on the homepage visit.
 
     Returns (best_email, best_phone).  Either may be an empty string.
     """
@@ -1087,6 +1143,10 @@ def enrich_one_browser(page, target: dict, cfg: dict) -> Tuple[str, str]:
     pw_timeout    = cfg.get("playwright_timeout", 8000)
     emails: List[str] = []
     phones: List[str] = []
+
+    if not _can_fetch(base):
+        log(f"robots.txt disallows: {base} — skipping", "warn")
+        return "", ""
 
     urls = [base] + [base + p for p in contact_paths[:2]]
 
@@ -1104,7 +1164,7 @@ def enrich_one_browser(page, target: dict, cfg: dict) -> Tuple[str, str]:
             continue
         _rate_limit(cfg)
 
-    return best_email(emails, cfg), phones[0] if phones else ""
+    return best_email(emails, cfg), best_phone(phones)
 
 
 # ================================================================
@@ -1191,7 +1251,7 @@ def run_pass1(
                     ctx["found"] = pass1_found
                 needs_pw.append(target)
                 fail_streak += 1
-                if fail_streak > 0 and fail_streak % 3 == 0:
+                if fail_streak % 3 == 0:
                     wait_for_internet(state)
                     if should_stop(state, stop_at): break
                     fail_streak = 0
