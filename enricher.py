@@ -953,21 +953,47 @@ def load_checkpoint(checkpoint_file: str) -> Tuple[Set[str], dict]:
 # NETWORK — helpers
 # ================================================================
 
+_robots_cache: Dict[str, bool] = {}
+
+
 def _can_fetch(url: str) -> bool:
     """
     Return True if the site's robots.txt permits scraping *url*.
 
-    Uses the standard-library RobotFileParser against the wildcard agent ("*").
-    Fails open (returns True) on any network or parse error — a transient
-    connectivity problem or missing robots.txt must never silently block a run.
+    Two performance guarantees:
+      - Short timeout (3 s) via requests — urllib's default has no timeout
+        and can stall a run for 30+ seconds per site.
+      - Per-domain caching — robots.txt is fetched at most ONCE per site
+        even when both passes visit the same domain.
+
+    Fails open (returns True) on any network or parse error so a missing
+    or unreachable robots.txt never silently blocks the run.
     """
     try:
         from urllib.parse import urlparse
         parsed     = urlparse(url if url.startswith("http") else "https://" + url)
-        robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
-        rp         = urllib.robotparser.RobotFileParser(robots_url)
-        rp.read()
-        return rp.can_fetch("*", url)
+        domain_key = f"{parsed.scheme}://{parsed.netloc}"
+
+        if domain_key in _robots_cache:
+            return _robots_cache[domain_key]
+
+        robots_url = f"{domain_key}/robots.txt"
+        try:
+            resp    = requests.get(
+                robots_url, timeout=3, verify=False,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            content = resp.text if resp.status_code == 200 else ""
+        except Exception:
+            _robots_cache[domain_key] = True
+            return True
+
+        rp = urllib.robotparser.RobotFileParser()
+        rp.set_url(robots_url)
+        rp.parse(content.splitlines())
+        allowed = rp.can_fetch("*", url)
+        _robots_cache[domain_key] = allowed
+        return allowed
     except Exception:
         return True   # fail open
 
