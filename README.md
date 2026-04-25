@@ -1,5 +1,10 @@
 # Email & Phone Enrichment Tool
 
+[![CI](https://github.com/FAAQJAVED/Email-Phone-Number-Enrichment-Tool/actions/workflows/ci.yml/badge.svg)](https://github.com/FAAQJAVED/Email-Phone-Number-Enrichment-Tool/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-69%20passing-brightgreen)](tests/)
+
 > Automatically scrape **contact email addresses and phone numbers** from a list of company websites — with zero column-name requirements, automatic file detection, a live progress bar, two-pass architecture, background auto-save, and Excel output.
 
 ---
@@ -267,7 +272,7 @@ Your input CSV can be named anything and placed in the same directory. It will b
 
 ## Notes
 
-- `robots.txt` is **not** enforced automatically — ensure your use case complies with each site's terms of service.
+- **robots.txt compliance** — the tool reads each site's `robots.txt` before scraping and skips any URL that disallows the wildcard agent (`*`). If `robots.txt` is unreachable or malformed the tool fails open (proceeds) so a transient network issue never silently blocks a run.
 - SSL certificate errors are suppressed to handle sites with expired or self-signed certificates.
 - The tool does not store or transmit data externally — all output is written locally.
 - Phone extraction targets contact pages; internal tool UIs, CMS pages, and admin dashboards may produce false positives that are filtered by the 7–15 digit rule.
