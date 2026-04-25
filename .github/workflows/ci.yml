@@ -31,11 +31,14 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install requests pyyaml openpyxl urllib3
-          pip install pytest pytest-cov
+          pip install pytest pytest-cov ruff
 
       # Playwright is NOT installed here intentionally.
       # All tests in test_core.py are pure-logic, no browser required.
       # A separate workflow can be added later for end-to-end browser tests.
+
+      - name: Lint with ruff
+        run: ruff check enricher.py tests/
 
       - name: Run tests with coverage
         run: |
