@@ -1,0 +1,133 @@
+# ================================================================
+# Email & Phone Enrichment Tool — Example Configuration
+# ================================================================
+# Copy this file to config.yaml and fill in YOUR_VALUE placeholders.
+#
+#   cp config.example.yaml config.yaml
+#
+# config.yaml is git-ignored so your real paths never leak.
+# This example file IS committed — it documents every option.
+# ================================================================
+
+
+# ---------------------------------------------------------------
+# INPUT / OUTPUT
+# ---------------------------------------------------------------
+input_file: ""                        # or: "YOUR_INPUT_FILE.csv"
+output_file: ""                       # or: "YOUR_OUTPUT_FILE.xlsx"
+checkpoint_file: "enrich_checkpoint.json"
+command_file: "command.txt"
+output_format: "xlsx"                 # "xlsx" or "csv"
+
+
+# ---------------------------------------------------------------
+# TIMING & PERFORMANCE
+# ---------------------------------------------------------------
+http_timeout: [4, 6]
+playwright_timeout: 8000
+browser_restart_every: 150
+stop_at: "YOUR_STOP_TIME"             # e.g. "23:00", or "" to disable
+autosave_interval: 60
+
+
+# ---------------------------------------------------------------
+# RATE LIMITING
+# ---------------------------------------------------------------
+rate_limit:
+  min_seconds: 0.1
+  max_seconds: 0.5
+
+
+# ---------------------------------------------------------------
+# USER-AGENT ROTATION
+# ---------------------------------------------------------------
+user_agents:
+  - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+  - "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36"
+
+
+# ---------------------------------------------------------------
+# SCRAPING BEHAVIOUR
+# ---------------------------------------------------------------
+contact_paths:
+  - "/contact"
+  - "/contact-us"
+  - "/about"
+  - "/about-us"
+
+locale: "en-US"
+
+
+# ---------------------------------------------------------------
+# COLUMN NAMES
+# ---------------------------------------------------------------
+columns:
+  company_name: ""       # or: "YOUR_COMPANY_COLUMN_HEADER"
+  website:      ""       # or: "YOUR_WEBSITE_COLUMN_HEADER"
+  email:        "Email"
+  phone:        "Phone"
+  category:     ""       # or: "YOUR_CATEGORY_COLUMN_HEADER"
+
+
+# ---------------------------------------------------------------
+# EMAIL FILTERING
+# ---------------------------------------------------------------
+skip_email_keywords:
+  - noreply
+  - no-reply
+  - donotreply
+  - privacy
+  - dataprotection
+  - data-protection
+  - gdpr
+  - unsubscribe
+  - postmaster
+  - webmaster
+  - bounce
+  - complaints
+  - legal
+  - abuse
+  - spam
+  - newsletter
+
+generic_email_keywords:
+  - info
+  - admin
+  - hello
+  - contact
+  - enquiries
+  - enquiry
+  - office
+  - mail
+  - email
+  - team
+  - support
+  - help
+  - sales
+
+junk_email_domains:
+  - sentry.io
+  - wixpress.com
+  - example.com
+  - schema.org
+  - w3.org
+  - googleapis.com
+  - cloudflare.com
+  - jquery.com
+
+
+# ---------------------------------------------------------------
+# COOKIE BANNER DISMISSAL
+# ---------------------------------------------------------------
+cookie_selectors:
+  - 'button:has-text("Accept all")'
+  - 'button:has-text("Accept All")'
+  - 'button:has-text("Accept cookies")'
+  - 'button:has-text("Accept")'
+  - 'button:has-text("I Accept")'
+  - 'button:has-text("Allow all")'
+  - 'button:has-text("OK")'
+  - 'button:has-text("Got it")'
+  - '[id*="accept"]'
+  - '[aria-label*="Accept"]'

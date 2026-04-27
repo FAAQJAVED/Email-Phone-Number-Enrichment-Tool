@@ -1,0 +1,72 @@
+[build-system]
+requires      = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name        = "email-enricher"
+version     = "1.0.0"
+description = "Two-pass email & phone enricher — requests first, Playwright fallback."
+readme      = "README.md"
+license     = { file = "LICENSE" }
+authors     = [{ name = "Afaq" }]
+requires-python = ">=3.10"
+
+keywords = [
+    "web-scraping", "email-enrichment", "lead-generation",
+    "playwright", "b2b", "contact-extraction",
+]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
+]
+
+dependencies = [
+    "requests>=2.31.0",
+    "playwright>=1.40.0",
+    "pyyaml>=6.0.1",
+    "openpyxl>=3.1.2",
+    "urllib3>=2.0.0",
+    "tqdm>=4.66.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+]
+
+[project.scripts]
+email-enricher = "enricher:main"
+
+[project.urls]
+Homepage   = "https://github.com/Afaq-Ahsan/email-enricher"
+Repository = "https://github.com/Afaq-Ahsan/email-enricher"
+Issues     = "https://github.com/Afaq-Ahsan/email-enricher/issues"
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths     = ["tests"]
+python_files  = ["test_*.py"]
+python_classes= ["Test*"]
+python_functions = ["test_*"]
+addopts       = "-v --tb=short"
+
+# ---------------------------------------------------------------------------
+# coverage
+# ---------------------------------------------------------------------------
+[tool.coverage.run]
+source = ["core", "enricher"]
+omit   = ["tests/*", "**/__pycache__/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false

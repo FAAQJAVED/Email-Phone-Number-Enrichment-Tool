@@ -1,0 +1,97 @@
+# ================================================================
+# Email Enricher — .gitignore
+# ================================================================
+
+
+# ---------------------------------------------------------------
+# Tool runtime files  (never commit these)
+# ---------------------------------------------------------------
+enrich_checkpoint.json
+enrich_checkpoint.json.tmp
+command.txt
+found_contacts_*.xlsx
+found_contacts_*.csv
+found_emails_*.xlsx
+found_emails_*.csv
+
+
+# ---------------------------------------------------------------
+# Input data  (keep your leads private)
+# ---------------------------------------------------------------
+*.csv
+# Un-ignore the sample file if you want to commit it:
+# !sample_input.csv
+
+
+# ---------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+develop-eggs/
+.installed.cfg
+lib/
+lib64/
+MANIFEST
+
+
+# ---------------------------------------------------------------
+# Virtual environments
+# ---------------------------------------------------------------
+.venv/
+venv/
+ENV/
+env/
+.env
+
+
+# ---------------------------------------------------------------
+# Playwright browser binaries
+# ---------------------------------------------------------------
+# Stored in the OS user directory by default.
+# Uncomment only if you set PLAYWRIGHT_BROWSERS_PATH=.
+# ms-playwright/
+
+
+# ---------------------------------------------------------------
+# Test artefacts
+# ---------------------------------------------------------------
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.cover
+
+
+# ---------------------------------------------------------------
+# IDE & OS
+# ---------------------------------------------------------------
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+
+
+# ---------------------------------------------------------------
+# Logs
+# ---------------------------------------------------------------
+*.log
+logs/
