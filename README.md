@@ -253,9 +253,7 @@ This enricher is one component of a broader B2B lead generation pipeline targeti
 |---|---|
 | **[Email-Phone-Number-Enrichment-Tool](https://github.com/FAAQJAVED/Email-Phone-Number-Enrichment-Tool)** ← *you are here* | Scrapes contact emails + phones from company websites |
 | **[google-maps-scraper](https://github.com/FAAQJAVED/google-maps-scraper)** | Extracts business listings (name, address, phone, website) from Google Maps |
-| **[trustpilot-scraper](https://github.com/FAAQJAVED/trustpilot-scraper)** | Pulls company profiles and contact links from Trustpilot |
-| **[property-directories](https://github.com/FAAQJAVED/property-directories)** | Scrapes TPO, UKALA, RICS, PropertyMark member directories |
-
+| **[Leadhunter_Pro](https://github.com/FAAQJAVED/Leadhunter_Pro)** | Scrapes 4 search engines to find verified company websites, scores and deduplicates results |
 ---
 
 ## Tech Stack
