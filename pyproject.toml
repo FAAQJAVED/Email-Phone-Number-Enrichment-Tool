@@ -46,9 +46,9 @@ dev = [
 email-enricher = "enricher:main"
 
 [project.urls]
-Homepage   = "https://github.com/Afaq-Ahsan/email-enricher"
-Repository = "https://github.com/Afaq-Ahsan/email-enricher"
-Issues     = "https://github.com/Afaq-Ahsan/email-enricher/issues"
+Homepage   = "https://github.com/FAAQJAVED/Email-Phone-Number-Enrichment-Tool"
+Repository = "https://github.com/FAAQJAVED/Email-Phone-Number-Enrichment-Tool"
+Issues     = "https://github.com/FAAQJAVED/Email-Phone-Number-Enrichment-Tool/issues"
 
 # ---------------------------------------------------------------------------
 # pytest
