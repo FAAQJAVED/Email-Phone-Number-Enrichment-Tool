@@ -44,7 +44,7 @@
 
 ## Real Results
 
-> Tested against 3,000+ UK property-sector websites (letting agents, block managers, HMO landlords).
+> Tested against 7000+ UK property-sector websites (letting agents, block managers, HMO landlords).
 
 * **~80% hit rate on Pass 1** (plain HTTP) — most sites serve contact emails in static HTML
 * **Additional ~10–15%** recovered by Pass 2 (Playwright) on JS-heavy property portals
@@ -249,12 +249,12 @@ pytest --cov=core --cov=enricher --cov-report=term-missing
 
 This enricher is one component of a broader B2B lead generation pipeline targeting UK property management companies, letting agents, block managers, and HMO landlords.
 
-| Repo | What it does |
-|---|---|
-| **[Email-Phone-Number-Enrichment-Tool](https://github.com/FAAQJAVED/Email-Phone-Number-Enrichment-Tool)** ← *you are here* | Scrapes contact emails + phones from company websites |
-| **[Google Maps Business Scraper](https://github.com/FAAQJAVED/Google-Maps-Business-Scraper)** | Extracts and enriches business listings from Google Maps |
-| **[Leadhunter Pro](https://github.com/FAAQJAVED/Leadhunter_Pro)** | Multi-engine search scraper with HOT/WARM/COLD lead scoring |
-| **[Trustpilot Business Scraper](https://github.com/FAAQJAVED/trustpilot-business-scraper)** | Extracts business listings from Trustpilot search results |
+| Repo                                                                                                                             | What it does                                                |
+| -------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| **[Email-Phone-Number-Enrichment-Tool](https://github.com/FAAQJAVED/Email-Phone-Number-Enrichment-Tool)** ← *you are here* | Scrapes contact emails + phones from company websites       |
+| **[Google Maps Business Scraper](https://github.com/FAAQJAVED/Google-Maps-Business-Scraper)**                                 | Extracts and enriches business listings from Google Maps    |
+| **[Leadhunter Pro](https://github.com/FAAQJAVED/Leadhunter_Pro)**                                                             | Multi-engine search scraper with HOT/WARM/COLD lead scoring |
+| **[Trustpilot Business Scraper](https://github.com/FAAQJAVED/trustpilot-business-scraper)**                                   | Extracts business listings from Trustpilot search results   |
 
 ---
 
