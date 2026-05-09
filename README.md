@@ -5,6 +5,7 @@
 [![CI](https://github.com/FAAQJAVED/Email-Phone-Number-Enrichment-Tool/actions/workflows/ci.yml/badge.svg)](https://github.com/FAAQJAVED/Email-Phone-Number-Enrichment-Tool/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
+[![Tests](https://img.shields.io/badge/tests-78%20passing-brightgreen)](tests/test_core.py)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)
 
 ---
@@ -214,7 +215,7 @@ Email-Phone-Number-Enrichment-Tool/
 │   └── controls.py          ← State, ControlListener, AutoSaver, check_cmd_file
 ├── tests/
 │   ├── __init__.py
-│   └── test_core.py         ← 50+ unit tests
+│   └── test_core.py         ← 78 unit tests
 ├── .github/
 │   └── workflows/
 │       └── ci.yml           ← pytest on push × 3 Python × 2 OS
