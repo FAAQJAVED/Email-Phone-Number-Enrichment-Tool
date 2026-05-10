@@ -20,7 +20,7 @@ found_emails_*.csv
 # ---------------------------------------------------------------
 *.csv
 # Un-ignore the sample file if you want to commit it:
-# !sample_input.csv
+sample_input.csv
 
 
 # ---------------------------------------------------------------
