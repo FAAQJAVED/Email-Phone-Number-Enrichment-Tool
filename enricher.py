@@ -802,9 +802,10 @@ def main() -> None:
     autosave_interval = cfg.get("autosave_interval", 60)
 
     # ── Pass 1 ─────────────────────────────────────────────────────────────
+    found_before_pass1 = len(found)                           # snapshot before pass 1
     auto_saver1 = AutoSaver(found, out_file, cfg, stats, interval=autosave_interval)
     needs_pw    = run_pass1(targets, done, found, out_file, state, ctx, cfg)
-    stats["pass1_found"] = len(found)
+    stats["pass1_found"] = len(found) - found_before_pass1   # only this run's finds
     auto_saver1.stop()
 
     if should_stop(state, cfg.get("stop_at", "")):
