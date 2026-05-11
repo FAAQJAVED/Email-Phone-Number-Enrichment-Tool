@@ -7,7 +7,6 @@
 [![CI](https://github.com/FAAQJAVED/Email-Phone-Number-Enrichment-Tool/actions/workflows/ci.yml/badge.svg)](https://github.com/FAAQJAVED/Email-Phone-Number-Enrichment-Tool/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-[![Tests](https://img.shields.io/badge/tests-78%20passing-brightgreen)](tests/test_core.py)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)
 
 ---
@@ -105,7 +104,7 @@
 | **Junk email filtering** | Configurable list of domains and keywords to exclude (noreply@, gdpr@, etc.) |
 | **Excel output + Run Stats** | Styled workbook with hit rate percentages, run duration, and coverage breakdown |
 | **CSV backup** | Always written alongside Excel — safe for large datasets and resume on next run |
-| **78 pure-function tests** | Full test suite runs offline in under 3 seconds — no browser or network required |
+| **88 pure-function tests** | Full test suite runs offline in under 3 seconds — no browser or network required |
 | **Cookie banner dismissal** | 10 configurable Playwright selectors, silently ignored on failure |
 | **Atomic checkpoint** | Writes to `.tmp` then `os.replace()` — no data loss on crash or kill |
 | **Resume anywhere** | Re-run the same command to continue; already-processed sites are never re-scraped |
@@ -143,7 +142,7 @@ Every input row produces one output row. The actual columns written to the Excel
 | **Email** | info@1clickproperties.co.uk |
 | **Phone** | 0208 752 1800 |
 
-> Sites where no email was found are written with `user@domain.com` as a placeholder — these are easy to filter out in Excel. Category is included as an extra column when it is present in your input CSV.
+> Sites with no email found are written with an empty cell. Category is included as an extra column when it is present in your input CSV.
 
 See [`Assets/sample_output.csv`](Assets/sample_output.csv) for 15 rows of real output from an actual run against UK property-sector websites.
 
@@ -322,7 +321,7 @@ Email-Phone-Number-Enrichment-Tool/
 │   └── controls.py          ← State, ControlListener, AutoSaver, check_cmd_file
 ├── tests/
 │   ├── __init__.py
-│   └── test_core.py         ← 78 unit tests
+│   └── test_core.py         ← 88 unit tests
 ├── Assets/
 │   ├── terminal_progress.png
 │   ├── output_preview.png
