@@ -646,3 +646,120 @@ class TestCheckDisk:
         # No machine has 10 TB free
         result = check_disk(min_mb=10_000_000)
         assert result is False
+
+
+# ===========================================================================
+# http_utils — fetch_url
+# ===========================================================================
+
+from unittest.mock import MagicMock
+from core.http_utils import fetch_url, enrich_one_http
+
+
+class TestFetchUrl:
+    """
+    fetch_url wraps _fetch_worker in a daemon thread.
+    requests.get is mocked so no real network calls are made.
+    """
+
+    _cfg = {
+        "http_timeout": [2, 4],
+        "user_agents": ["Mozilla/5.0 (test)"],
+        "rate_limit": {"min_seconds": 0, "max_seconds": 0},
+    }
+
+    def test_returns_html_on_200(self):
+        fake = MagicMock()
+        fake.status_code = 200
+        fake.text = "<html><body>contact@acme.co.uk</body></html>"
+        with patch("core.http_utils.requests.get", return_value=fake):
+            result = fetch_url("https://acme.co.uk", self._cfg)
+        assert result == "<html><body>contact@acme.co.uk</body></html>"
+
+    def test_returns_none_on_404(self):
+        fake = MagicMock()
+        fake.status_code = 404
+        with patch("core.http_utils.requests.get", return_value=fake):
+            result = fetch_url("https://acme.co.uk", self._cfg)
+        assert result is None
+
+    def test_returns_none_on_network_exception(self):
+        with patch("core.http_utils.requests.get", side_effect=ConnectionError("refused")):
+            result = fetch_url("https://acme.co.uk", self._cfg)
+        assert result is None
+
+    def test_returns_none_when_daemon_thread_times_out(self):
+        """
+        Hard-kill timeout path: requests.get blocks longer than wall_clock_limit
+        so fetch_url abandons the daemon thread and returns None.
+        """
+        def slow_get(*args, **kwargs):
+            time.sleep(5)  # far longer than wall_clock_limit below
+            return MagicMock(status_code=200, text="never reached")
+
+        with patch("core.http_utils.requests.get", side_effect=slow_get):
+            result = fetch_url("https://acme.co.uk", self._cfg, wall_clock_limit=0.05)
+        assert result is None
+
+
+# ===========================================================================
+# http_utils — enrich_one_http  (Pass 1)
+# ===========================================================================
+
+class TestEnrichOneHttp:
+    """
+    enrich_one_http is the Pass 1 entry point.
+    fetch_url is mocked — no network calls, no rate-limit sleep.
+    """
+
+    @pytest.fixture()
+    def http_cfg(self, minimal_cfg) -> dict:
+        return {
+            **minimal_cfg,
+            "http_timeout": [2, 4],
+            "user_agents": ["Mozilla/5.0 (test)"],
+            "contact_paths": ["/contact"],
+            "rate_limit": {"min_seconds": 0, "max_seconds": 0},
+        }
+
+    @staticmethod
+    def _target(url: str = "https://acmelettings.co.uk") -> dict:
+        return {"website": url, "name": "Acme Lettings", "category": "", "phone": ""}
+
+    def test_extracts_email_from_homepage(self, http_cfg):
+        html = "<a href='mailto:james@acmelettings.co.uk'>Email us</a>"
+        with patch("core.http_utils.fetch_url", return_value=html):
+            email, _ = enrich_one_http(self._target(), http_cfg)
+        assert email == "james@acmelettings.co.uk"
+
+    def test_extracts_phone_from_homepage(self, http_cfg):
+        html = "<a href='tel:02079460123'>Call us</a>"
+        with patch("core.http_utils.fetch_url", return_value=html):
+            _, phone = enrich_one_http(self._target(), http_cfg)
+        assert phone != ""
+
+    def test_returns_empty_strings_when_no_contact_on_any_page(self, http_cfg):
+        with patch("core.http_utils.fetch_url", return_value="<p>Nothing here.</p>"):
+            email, phone = enrich_one_http(self._target(), http_cfg)
+        assert email == "" and phone == ""
+
+    def test_returns_empty_strings_when_all_fetches_fail(self, http_cfg):
+        with patch("core.http_utils.fetch_url", return_value=None):
+            email, phone = enrich_one_http(self._target(), http_cfg)
+        assert email == "" and phone == ""
+
+    def test_junk_email_is_filtered_out(self, http_cfg):
+        html = "<a href='mailto:noreply@acmelettings.co.uk'>x</a>"
+        with patch("core.http_utils.fetch_url", return_value=html):
+            email, _ = enrich_one_http(self._target(), http_cfg)
+        assert email == ""
+
+    def test_falls_back_to_contact_subpage_when_homepage_empty(self, http_cfg):
+        def fake_fetch(url, cfg, wall_clock_limit=10):
+            if url.endswith("/contact"):
+                return "<a href='mailto:info@acmelettings.co.uk'>Contact</a>"
+            return "<p>No email on homepage.</p>"
+
+        with patch("core.http_utils.fetch_url", side_effect=fake_fetch):
+            email, _ = enrich_one_http(self._target(), http_cfg)
+        assert email == "info@acmelettings.co.uk"
